@@ -1,38 +1,39 @@
-use actix::Addr;
-use actix_redis::{resp_array, Command, RedisActor, RespValue};
-use actix_web::{web, App, HttpResponse, HttpServer};
-
-async fn get(addr: web::Data<Addr<RedisActor>>) -> HttpResponse {
-    let res = addr
-        .send(Command(resp_array!["SET", "test", "value"]))
-        .await;
-
-    match res {
-        Ok(Ok(resp)) => {
-            assert_eq!(resp, RespValue::SimpleString("OK".to_owned()));
-
-            let res = addr.send(Command(resp_array!["GET", "test"])).await;
-            match res {
-                Ok(Ok(resp)) => {
-                    dbg!(&resp);
-                    HttpResponse::Ok().finish()
-                }
-                _ => HttpResponse::InternalServerError().finish(),
-            }
-        }
-        _ => HttpResponse::InternalServerError().finish(),
-    }
-}
+use actix_web::{
+    web::{self, Data},
+    App, HttpResponse, HttpServer,
+};
+use redis::{aio::MultiplexedConnection, AsyncCommands};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let addr = RedisActor::start("127.0.0.1:6379");
+    let client = redis::Client::open("redis://127.0.0.1:6379").expect("failed to connect to redis");
+    let redis_conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .expect("failed to create multiplexed connection");
+    let redis_conn = Data::new(redis_conn);
+
     HttpServer::new(move || {
         App::new()
-            .route("/hello", web::get().to(get))
-            .app_data(addr.clone())
+            .route("/test_redis", web::get().to(test_redis))
+            .app_data(redis_conn.clone())
     })
     .bind(("127.0.0.1", 8080))?
     .run()
     .await
+}
+
+async fn test_redis(redis_conn: web::Data<MultiplexedConnection>) -> HttpResponse {
+    let mut redis_conn = redis_conn.as_ref().clone();
+    let _ = set(&mut redis_conn, "my_key", "my_value").await;
+    HttpResponse::Ok().finish()
+}
+
+async fn set(
+    redis_conn: &mut MultiplexedConnection,
+    key: &str,
+    value: &str,
+) -> redis::RedisResult<()> {
+    redis_conn.set(key, value).await?;
+    Ok(())
 }
